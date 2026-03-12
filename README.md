@@ -1,4 +1,4 @@
-# 🎉 Port Scanner (Fun Edition)
+# 🎉 Port Scanner 
 
 Welcome to the **Port Scanner** — your friendly neighborhood script that pokes TCP ports (gently) and tells you whether they are open or closed. 🚀
 
