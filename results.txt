@@ -1,0 +1,11 @@
+==================================================
+         PORT SCANNER REPORT
+==================================================
+  Target    : 172.20.10.2
+  Timestamp : 2026-03-18 02:57:24
+  OS Guess  : Unknown (run as root for OS detection)
+  Duration  : 0.08s
+  Open Ports: 0
+==================================================
+
+  No open ports found.

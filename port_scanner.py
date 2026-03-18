@@ -4,12 +4,12 @@ import time
 import rich
 import os
 from scapy.all import IP, ICMP, sr1
-import requests
 import re
 import save_reports
 from threading import Lock
-from concurrent.futures import ThreadPoolExecutor
 from colorama import init, Fore, Style
+import asyncio 
+import aiohttp
 
 init(autoreset=True)
 
@@ -93,32 +93,31 @@ def extract_keyword(banner,service):
       
    return service if service!="Unknown" else None
 
-def CVELookup(keyword,max_results=3):
-   if not keyword:
-      return[]
-   
-   url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
-   params = {
+async def CVELookup(keyword, max_results=3):
+    if not keyword:
+        return []
+
+    url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+    params = {
         "keywordSearch": keyword,
         "resultsPerPage": max_results
     }
-   try:
-        response = requests.get(url, params=params, timeout=10)
-        data = response.json()
-        
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                data = await response.json()
+
         cves = []
         for vuln in data.get("vulnerabilities", []):
             cve = vuln["cve"]
-            
             cve_id = cve["id"]
-            
-            # Get English description
+
             description = next(
                 (d["value"] for d in cve["descriptions"] if d["lang"] == "en"),
                 "No description"
             )
-            
-            # Get severity score
+
             severity = "N/A"
             score = "N/A"
             metrics = cve.get("metrics", {})
@@ -128,20 +127,20 @@ def CVELookup(keyword,max_results=3):
                 score = data_v31["baseScore"]
             elif "cvssMetricV2" in metrics:
                 data_v2 = metrics["cvssMetricV2"][0]["cvssData"]
-                severity = data_v2["baseSeverity"]  
+                severity = data_v2["baseSeverity"]
                 score = data_v2["baseScore"]
-            
+
             cves.append({
                 "id": cve_id,
                 "score": score,
                 "severity": severity,
-                "description": description[:120]  
+                "description": description[:120]
             })
-        
+
         return cves
-   
-   except Exception:
-        return []  
+
+    except Exception:
+        return []
 
 def severity_color(severity):
    colors = {
@@ -153,62 +152,76 @@ def severity_color(severity):
     }
    return colors.get(severity.upper(), Fore.WHITE)
 
-def grab_banner(sock,port):
+async def grab_banner(reader, writer, port):
     banner = None
     first_line = None
 
     try:
         if port in HTTP_PORTS:
-            sock.send(b"HEAD / HTTP/1.0\r\n\r\n")
-        raw = sock.recv(1024)
+            writer.write(b"HEAD / HTTP/1.0\r\n\r\n")
+            await writer.drain()
+
+        raw = await asyncio.wait_for(reader.read(1024), timeout=1.5)
         banner = raw.decode(errors="ignore").strip()
         first_line = banner.replace('\r\n', '\n').splitlines()[0]
     except:
         pass
+
     return first_line
          
-def scan_port(host,port,timeout):
-    with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as sock:
-      sock.settimeout(timeout)
-      if  sock.connect_ex((host,port)) == 0:
-
-        banner = grab_banner(sock,port)
-        
+async def scan_port(host,port,timeout,semaphore):
+    async with semaphore:   
         try:
-          service = socket.getservbyport(port)
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port),
+                timeout=timeout
+            )
+        except (asyncio.TimeoutError, ConnectionRefusedError, OSError):
+            return 
+
+        # Port is open
+        banner = await grab_banner(reader, writer, port)
+        writer.close()
+        await writer.wait_closed()
+
+        try:
+            service = socket.getservbyport(port)
         except OSError:
-          service = "Unknown"
+            service = "Unknown"
 
-        keyword = extract_keyword(banner,service)
+        keyword = extract_keyword(banner, service)
+        cves = await CVELookup(keyword)
 
-        cves = CVELookup(keyword)
-        
-        with lock:
-                open_ports.append((port, service, banner, cves))  # ← 4 values
-                print(Fore.GREEN + f"  [+] Port {port:<6} open   ({service})")
-                if banner:
-                    print(Fore.MAGENTA + f"      Banner : {banner[:60]}")
-                if cves:
-                    print(Fore.YELLOW + f"      CVEs found: {len(cves)}")
-                    for cve in cves:
-                        color = severity_color(cve['severity'])
-                        print(color + f"        {cve['id']} | Score: {cve['score']} | {cve['severity']}")
-                        print(Fore.WHITE + f"        {cve['description'][:80]}")
-
+        async with async_lock:
+            open_ports.append((port, service, banner, cves))
+            print(Fore.GREEN + f"  [+] Port {port:<6} open   ({service})")
+            if banner:
+                print(Fore.MAGENTA + f"      Banner : {banner[:60]}")
+            if cves:
+                print(Fore.YELLOW + f"      CVEs found: {len(cves)}")
+                for cve in cves:
+                    color = severity_color(cve['severity'])
+                    print(color + f"        {cve['id']} | Score: {cve['score']} | {cve['severity']}")
+                    print(Fore.WHITE + f"        {cve['description'][:80]}")
 
 
     
 
-def scan_ports(host, start_port,end_port,timeout,workers):
+async def scan_ports(host, start_port,end_port,timeout,workers):
     print(Fore.CYAN + f"\n  [*] Target   : {host}")
     print(Fore.CYAN + f"  [*] Range    : {start_port} - {end_port}")
     print(Fore.CYAN + f"  [*] Threads  : {workers}")
     print(Fore.CYAN + f"  [*] Timeout  : {timeout}s")
     print(Fore.YELLOW + f"\n  Scanning...\n")
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        for port in range(start_port, end_port + 1):
-            executor.submit(scan_port, host, port,timeout)
+    semaphore = asyncio.Semaphore(workers)  
+
+    tasks = [
+        scan_port(host, port, timeout, semaphore)
+        for port in range(start_port, end_port + 1)
+    ]
+
+    await asyncio.gather(*tasks)  
 
 def parse_port_range(port_range):
     try:
@@ -265,15 +278,19 @@ def print_summary(start_time,os_guess):
     print(Fore.CYAN + f"  [*] Scan completed in {elapsed:.2f} seconds")
     print(Fore.YELLOW + "  ─────────────────────────────────\n")
 
+async_lock = asyncio.Lock() 
 
-start_time = time.time()
-start_port, end_port = parse_port_range(args.ports)
-validate_port_range(start_port,end_port)
-target_ip = resolve_host(args.host)
+async def main():
+    start_time = time.time()
+    start_port, end_port = parse_port_range(args.ports)
+    validate_port_range(start_port, end_port)
+    target_ip = resolve_host(args.host)
 
-os_guess = os_fingerprint(target_ip)          
-print(Fore.CYAN + f"  [*] OS Guess : {os_guess}")  
+    os_guess = os_fingerprint(target_ip)
+    print(Fore.CYAN + f"  [*] OS Guess : {os_guess}")
 
-scan_ports(target_ip, start_port, end_port,args.timeout,args.workers)
-print_summary(start_time,os_guess)
-save_reports.save_report(args.output,target_ip,os_guess,start_time,open_ports)
+    await scan_ports(target_ip, start_port, end_port, args.timeout, args.workers)
+    print_summary(start_time, os_guess)
+    save_reports.save_report(args.output, target_ip, os_guess, start_time, open_ports)
+
+asyncio.run(main())
