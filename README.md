@@ -1,55 +1,190 @@
-# 🎉 Port Scanner 
+# 🔍 Port Scanner
 
-Welcome to the **Port Scanner** — your friendly neighborhood script that pokes TCP ports (gently) and tells you whether they are open or closed. 🚀
+> *A learning project that got a little out of hand.*
 
-This project is a small Python script (`port_scanner.py`) built with `argparse`, so it behaves like a proper CLI tool and can scan a single port _or_ a full range.
+Started as "let me try connecting to a port" and somehow ended up with CVE lookups, OS fingerprinting, and JSON reports. Funny how that happens.
 
----
-
-## 🧠 What it does
-
-- Scans a single port (e.g., `80`) and reports whether it is open or closed
-- Scans a range of ports (e.g., `1-1024`) and reports each one, one-by-one
-- Uses a timeout so it won’t hang forever (default is 0.5s per port)
+This is a Python-based TCP port scanner built from scratch — no Nmap, no shortcuts, just sockets, threads, and a bit of curiosity about what's listening on your network.
 
 ---
 
-## 🚀 How to run it
+## ⚠️ The Usual Disclaimer
+
+Only scan hosts **you own or have explicit permission to scan.**
+Scanning someone else's network without permission is illegal in most jurisdictions and generally a bad time for everyone involved.
+This tool is for learning, CTFs, and authorized pentesting. Not mischief.
+
+---
+
+## 🧠 What's Actually Happening Under the Hood
+
+When you run this scanner, here's what it does:
+
+1. **Resolves your target** — converts hostname to IP if needed
+2. **Fingerprints the OS** — sends an ICMP ping and reads the TTL value from the response. Linux starts at 64, Windows at 128. Simple but surprisingly effective.
+3. **Scans ports concurrently** — spins up threads (dynamically based on your CPU) and hammers the port range simultaneously. Sequential scanning is for people with infinite patience.
+4. **Grabs banners** — once a port is open, it tries to read what the service says about itself. HTTP ports get a `HEAD` probe first. SSH, FTP, SMTP etc. announce themselves immediately on connect.
+5. **Looks up CVEs** — takes the service/version from the banner and hits the NVD (National Vulnerability Database) API to find known vulnerabilities. Free, no API key needed.
+6. **Saves a report** — dumps everything into a clean JSON or TXT file so you have receipts.
+
+---
+
+## ✨ Features
+
+| Feature | Details |
+
+| ⚡ Multithreaded scanning | Dynamic worker count based on CPU cores |
+
+| 🎯 Banner grabbing | HTTP probe + generic recv for other services |
+
+| 🔎 Service detection | Maps open ports to known service names |
+
+| 🧬 OS fingerprinting | TTL-based guess via raw ICMP (requires sudo) |
+
+| 🛡️ CVE lookup | Auto-queries NVD API for known vulnerabilities |
+
+| 🗂️ Static CVE mapping | Known risky ports (445, 3389, 135) get looked up even without a banner |
+
+| 🎨 Colored output | Because staring at monochrome text is so 1995 |
+| 📋 Output reports | Save results as JSON or TXT |
+
+| ✅ Input validation | Handles bad IPs, invalid ranges, and unreachable hosts gracefully |
+
+| ⏱️ Scan timer | Know exactly how fast (or slow) your network is |
+
+---
+
+## 🚀 Installation
+
+```bash
+git clone https://github.com/mccoymikeyistaken-byte/port_scanner.git
+cd port_scanner
+pip install -r requirements.txt
+```
+
+**Requirements:**
+```
+requests
+colorama
+scapy
+```
+
+---
+
+## 🎮 Usage
+
+### Scan default range (1-1024)
+```bash
+python port_scanner.py 192.168.1.1
+```
+
+### Scan a custom range
+```bash
+python port_scanner.py 192.168.1.1 1-10000
+```
 
 ### Scan a single port
-
 ```bash
-python port_scanner.py 127.0.0.1 80
+python port_scanner.py 192.168.1.1 80
 ```
 
-### Scan a range of ports
-
+### Save output as JSON
 ```bash
-python port_scanner.py 127.0.0.1 1-1024
+python port_scanner.py 192.168.1.1 -o report.json
 ```
 
-### Get help (of course!)
-
+### Save output as TXT
 ```bash
-python port_scanner.py -h
+python port_scanner.py 192.168.1.1 -o report.txt
+```
+
+### Full options
+```bash
+python port_scanner.py 192.168.1.1 1-65535 -t 0.5 -w 200 -o results.json
+```
+
+### OS fingerprinting (needs root for raw ICMP)
+```bash
+sudo python port_scanner.py 192.168.1.1 1-1024
 ```
 
 ---
 
-## 🧩 Notes
+## ⚙️ CLI Arguments
 
-- This script is **not a security tool**, it’s a learning toy.
-- Always scan hosts you have permission to scan.
-- If you want to make it faster, try adding threading or async sockets (pull requests welcome!).
-
----
-
-## 🤖 Why this exists
-
-Because it’s fun to watch code automatically check network ports and tell you which ones are listening.
-
-Plus this repo gives you a place to practice Python + `argparse` with a real-world style CLI.
+| Argument | Default | Description |
+|---|---|---|
+| `host` | required | Target IP or hostname |
+| `ports` | `1-1024` | Port or range (e.g. `80` or `1-65535`) |
+| `-t / --timeout` | `0.3s` | Timeout per port in seconds |
+| `-w / --workers` | auto | Number of threads |
+| `-o / --output` | `results.txt` | Output file (`.json` or `.txt`) |
 
 ---
 
-Enjoy, and don’t forget to say hi to the open ports! 👋
+## 📊 Sample Output
+
+```
+  [*] Resolved : scanme.example.com → 192.168.1.1
+  [*] OS Guess : Linux/Unix (TTL=63)
+
+  [*] Target   : 192.168.1.1
+  [*] Range    : 1 - 1024
+  [*] Threads  : 160
+  [*] Timeout  : 0.3s
+
+  Scanning...
+
+  [+] Port 22     open   (ssh)
+      Banner : SSH-2.0-OpenSSH_8.9p1 Ubuntu-3
+      CVEs found: 2
+        CVE-2023-38408 | Score: 9.8 | CRITICAL
+        Remote code execution via forwarded ssh-agent...
+
+  [+] Port 80     open   (http)
+      Banner : HTTP/1.1 200 OK
+
+  ─────────────────────────────────
+  SCAN SUMMARY
+  ─────────────────────────────────
+  OS Guess : Linux/Unix (TTL=63)
+  ─────────────────────────────────
+  22     open   ssh          SSH-2.0-OpenSSH_8.9p1
+  80     open   http         HTTP/1.1 200 OK
+
+  [*] 2 open port(s) found
+  [*] Scan completed in 0.87 seconds
+  ─────────────────────────────────
+```
+
+---
+
+## 🗺️ What I Learned Building This
+
+- **Threading vs sequential** — scanning 10,000 ports sequentially at 0.3s timeout each = 50 minutes. With threads = under a second. Threading matters.
+- **DNS resolution is expensive** — resolving the hostname inside each thread (1000+ times) was a bug that cost real performance. Resolve once, reuse everywhere.
+- **Race conditions are sneaky** — multiple threads writing to the same list without a Lock can silently lose data. No error, no warning, just missing results.
+- **Firewalls block ICMP** — phones and some routers drop ping packets entirely, which is why OS fingerprinting returns "no response" on certain targets. TTL fingerprinting only works when the target actually responds.
+- **Banners are chatty** — a surprising number of services will just tell you exactly what software and version they're running. OpenSSH, Apache, nginx — they all announce themselves. This is why keeping software updated matters.
+
+---
+
+## 🛣️ What's Coming Next
+
+- [ ] Asyncio rewrite (faster, more scalable than threading)
+- [ ] CIDR range scanning (`192.168.1.0/24`)
+- [ ] UDP port scanning
+- [ ] Web dashboard (Flask)
+
+---
+
+## 🤖 Why This Exists
+
+Because the best way to understand how network security tools work is to build one yourself.
+Also because it's genuinely fun to watch your code discover what's quietly listening on a network.
+
+Built with Python, curiosity, and an unreasonable number of Stack Overflow tabs.
+
+---
+
+*Don't forget to say hi to the open ports.* 👋

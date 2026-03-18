@@ -1,0 +1,14 @@
+{
+    "target": "172.20.10.2",
+    "timestamp": "2026-03-18 01:35:18",
+    "os_guess": "Unknown (run as root for OS detection)",
+    "scan_duration": "0.41s",
+    "open_ports": [
+        {
+            "port": 3000,
+            "service": "Unknown",
+            "banner": "HTTP/1.1 200 OK",
+            "cves": []
+        }
+    ]
+}
